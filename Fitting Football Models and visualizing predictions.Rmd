@@ -1,0 +1,199 @@
+---
+title: "Football_data_Bayesian Midterm project"
+output: html_document
+date: "2023-10-08"
+---
+#install.packages("devtools")
+
+
+#install_github("LeoEgidi/footBayes")
+library(devtools)
+library(footBayes)
+library(bayesplot)
+library(loo)
+library(ggplot2)
+library(dplyr)
+library(tidyverse)
+
+data("italy")
+italy <- as.data.frame(italy)
+italy_2000 <- subset(italy[, c(2,3,4,6,7)], Season =="2000")
+head(italy_2000)
+
+# Fit Stan models
+# no dynamics, no predictions
+# 4 Markov chains, 'n_iter' iterations each
+
+n_iter <- 200   
+fit1_stan <- stan_foot(data = italy_2000, model="biv_pois",chains = 4,iter = n_iter)
+
+# print of model summary for parameters:
+# home, sigma_att, sigma_def
+
+print(fit1_stan, pars =c("home", "rho", "sigma_att","sigma_def"))
+
+# Marginal posterior with bayesplot
+
+posterior1 <- as.matrix(fit1_stan)
+mcmc_areas(posterior1, regex_pars=c("home", "rho","sigma_att", "sigma_def"))
+  
+# Model's code extraction
+
+fit1_stan@stanmodel
+
+# Fitting MLE models
+# no dynamics, no predictions
+# Wald intervals
+fit1_mle <- mle_foot(data = italy_2000,model="biv_pois",interval = "Wald") 
+fit1_mle$home
+fit1_mle$sigma_att
+fit1_mle$sigma_def
+# Fitting Stan models
+# changing priors
+# student-t for team-specific abilities, laplace for sds
+
+fit1_stan_t <- stan_foot(data = italy_2000,
+                         model="biv_pois",
+                         chains = 4, 
+                         prior = student_t(4,0,NULL),
+                         prior_sd = laplace(0,1),
+                         iter = n_iter)
+                         
+# comparing posteriors
+
+posterior1_t <- as.matrix(fit1_stan_t)
+model_names <- c("Default", "Stud+Laplace")
+color_scheme_set(scheme = "gray")
+gl_posterior <- cbind(posterior1[,"sigma_att"], posterior1_t[,"sigma_att"])
+colnames(gl_posterior)<-c("sigma_att", "sigma_att_t")
+mcmc_areas(gl_posterior, pars=c("sigma_att", "sigma_att_t"))+xaxis_text(on =TRUE, size=ggplot2::rel(2.9))+
+  yaxis_text(on =TRUE, size=ggplot2::rel(2.9))+scale_y_discrete(labels = ((parse(text= model_names))))+
+  ggtitle("Att/def sds")+theme(plot.title = element_text(hjust = 0.5, size =rel(2.6)))      
+  
+  
+  
+  
+#DYNAMIC FIT
+# Fit Stan models
+# seasonal dynamics, no predictions
+# 4 Markov chains, 'n_iter' iterations each
+
+fit2_stan <- stan_foot(data = italy_2000,
+                       model="biv_pois",
+                       dynamic_type ="weekly", 
+                       iter = n_iter) 
+print(fit2_stan, pars =c("home", "rho", "sigma_att","sigma_def"))
+
+
+fit3_stan <- stan_foot(data = italy_2000,
+                       model="double_pois",
+                       dynamic_type = "weekly",
+                       #cores = 4,
+                       iter = n_iter)  # double poisson
+print(fit3_stan, pars =c("home", "sigma_att",
+                        "sigma_def"))
+
+# Fit Stan models
+# weekly dynamics, no predictions
+# 4 chains, 'n_iter' iterations each
+
+fit3_stan_t <- stan_foot(data = italy_2000,
+                model="double_pois",
+                prior = student_t(4,0, NULL), # 4 df
+                prior_sd = cauchy(0,25),
+                dynamic_type = "weekly",
+                #cores = 4,
+                iter = n_iter)  # double poisson
+print(fit3_stan_t, pars =c("home", "sigma_att",
+                           "sigma_def"))
+                           
+                           
+# Plotting abilities: credible and confidence 95% intervals
+
+foot_abilities(object = fit1_stan, data = italy_2000, cex.var = 1)
+foot_abilities(object = fit1_mle, data = italy_2000, cex.var = 1)
+# Plotting abilities: credible and confidence 95% intervals
+
+foot_abilities(fit2_stan, italy_2000)
+
+# PP checks: aggregated goal's differences and ordered goal differences
+
+pp_foot(data = italy_2000, object = fit1_stan, 
+        type = "aggregated")
+
+pp_foot(data = italy_2000, object = fit1_stan, 
+        type = "matches")
+        
+# PPC densities overlay with the bayesplot package
+
+# extracting the replications
+
+sims <-rstan::extract(fit1_stan)
+goal_diff <- italy_2000$hgoal-italy_2000$vgoal
+
+# plotting data density vs replications densities
+
+ppc_dens_overlay(goal_diff, sims$y_rep[,,1]-sims$y_rep[,,2], bw = 0.5)
+
+# Fit Stan models
+## weekly dynamics, predictions of last four weeks
+## 4 chains 'n_iter' iterations each
+
+fit4_stan <- stan_foot(data = italy_2000,
+                       model="biv_pois", 
+                       predict = 36,
+                       dynamic_type = "weekly",
+                       iter = n_iter)  
+foot_prob(object = fit4_stan, data = italy_2000,
+          home_team = "Reggina Calcio",
+          away_team= "AC Milan")
+          
+## Home win out-of-sample probabilities
+
+foot_round_robin(data = italy_2000, object = fit4_stan)
+
+## Rank league reconstruction
+
+# aggregated plot
+
+foot_rank(data = italy_2000, object = fit1_stan)
+
+# team-specific plot
+
+foot_rank(data = italy_2000, object = fit1_stan, visualize = "individual")
+## Rank predictions for individual teams
+
+# aggregated plot
+
+foot_rank(data = italy_2000, object = fit4_stan)
+
+# team-specific plot
+
+foot_rank(italy_2000, fit4_stan, 
+          team_sel = c("AC Milan", "AS Roma"), 
+          visualize = "individual")
+
+foot_rank(italy_2000, fit4_stan, 
+          visualize = "individual")
+          
+### Model comparisons
+## LOOIC, loo function
+
+# extract pointwise log-likelihood
+
+log_lik_1 <- extract_log_lik(fit1_stan)
+log_lik_1_t <- extract_log_lik(fit1_stan_t)
+log_lik_2 <- extract_log_lik(fit2_stan)
+log_lik_3_t <- extract_log_lik(fit3_stan_t)
+
+# compute loo
+
+loo1 <- loo(log_lik_1)
+loo1_t <- loo(log_lik_1_t)
+loo2 <- loo(log_lik_2)
+loo3_t <- loo(log_lik_3_t)
+
+
+# compare three looic
+
+loo_compare(loo1, loo1_t, loo2, loo3_t)
